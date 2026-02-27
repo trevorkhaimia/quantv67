@@ -1,0 +1,19 @@
+# Copy to .env and fill in your values
+# bun will auto-load .env files
+
+# Required: OpenRouter API key for LLM calls
+OPENROUTER_API_KEY=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
+
+
+# Required: Solana RPC (use a paid one like Helius/Quicknode for speed)
+SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
+
+# Optional: Wallet private key (Base58). Leave empty for scan-only mode.
+# ⚠️ USE A DEDICATED TRADING WALLET — NEVER YOUR MAIN WALLET
+WALLET_PRIVATE_KEY=3DQH51d17x2xYJPKbmtYS3cm5XVswcyu2YbpZC2XuSmCwU5yXhkkKyeXNASsHnN73M8Jf28bvu47MmKNEX5JHHgb
+
+# Optional: Override default LLM model
+LLM_MODEL=deepseek/deepseek-chat
+
+# Optional: Server port
+PORT=3000
