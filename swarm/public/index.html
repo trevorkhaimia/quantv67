@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SWARM — Trading Agent Network</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;700&family=Orbitron:wght@400;700;900&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #050508; color: #e0e0e0; font-family: 'IBM Plex Mono', monospace; }
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: #0a0a0f; }
+    ::-webkit-scrollbar-thumb { background: #222; border-radius: 2px; }
+    @keyframes pulse { 0%,100%{opacity:1}50%{opacity:0.4} }
+    @keyframes scan { 0%{transform:translateX(-100%)}100%{transform:translateX(200%)} }
+    @keyframes fadeIn { from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)} }
+    input, select {
+      background: #0a0a0f; border: 1px solid #1a1a24; color: #e0e0e0;
+      padding: 8px 12px; border-radius: 6px; font-family: 'IBM Plex Mono', monospace;
+      font-size: 12px; outline: none; width: 100%;
+    }
+    input:focus, select:focus { border-color: #00ff8844; }
+    button { cursor: pointer; font-family: 'Space Mono', monospace; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+
+const AGENTS_META = {
+  narrative: { icon: "\u{1F50D}", color: "#00ff88" },
+  hunter: { icon: "\u{1F3AF}", color: "#ff6b35" },
+  whale: { icon: "\u{1F40B}", color: "#4ecdc4" },
+  risk: { icon: "\u{1F6E1}", color: "#ffe66d" },
+  executor: { icon: "\u26A1", color: "#ff3366" },
+  backtest: { icon: "\u{1F4CA}", color: "#a855f7" },
+};
+
+const STATUS_COLORS = { idle: "#555", running: "#00ff88", error: "#ff3366", waiting: "#ffe66d" };
+const LOG_COLORS = { info: "#8a8a8a", success: "#00ff88", warn: "#ffe66d", error: "#ff3366", cmd: "#4ecdc4", trade: "#a855f7" };
+
+function useWebSocket() {
+  const [connected, setConnected] = useState(false);
+  const [logs, setLogs] = useState([]);
+  const [agents, setAgents] = useState([]);
+  const [running, setRunning] = useState(false);
+  const wsRef = useRef(null);
+  const reconnectRef = useRef(null);
+
+  const connect = useCallback(function() {
+    var proto = location.protocol === "https:" ? "wss:" : "ws:";
+    var ws = new WebSocket(proto + "//" + location.host + "/ws");
+
+    ws.onopen = function() {
+      setConnected(true);
+      if (reconnectRef.current) clearTimeout(reconnectRef.current);
+    };
+
+    ws.onmessage = function(e) {
+      try {
+        var msg = JSON.parse(e.data);
+        if (msg.type === "init") {
+          setRunning(msg.data.running);
+          setAgents(msg.data.agents || []);
+          setLogs(msg.data.logs || []);
+        } else if (msg.type === "log") {
+          setLogs(function(prev) { return prev.slice(-400).concat([msg.data]); });
+        } else if (msg.type === "status") {
+          setRunning(msg.data.running);
+          if (msg.data.agents) setAgents(msg.data.agents);
+        }
+      } catch(err) {}
+    };
+
+    ws.onclose = function() {
+      setConnected(false);
+      reconnectRef.current = setTimeout(connect, 3000);
+    };
+
+    ws.onerror = function() { ws.close(); };
+    wsRef.current = ws;
+  }, []);
+
+  useEffect(function() { connect(); return function() { if(wsRef.current) wsRef.current.close(); }; }, [connect]);
+
+  return { connected: connected, logs: logs, agents: agents, running: running, setRunning: setRunning, setAgents: setAgents };
+}
+
+function AgentCard(props) {
+  var agent = props.agent;
+  var meta = AGENTS_META[agent.id] || { icon: "\u{1F916}", color: "#888" };
+  var isRunning = agent.status === "running";
+
+  return (
+    <div style={{
+      background: "linear-gradient(135deg, #0a0a0f 0%, #111118 100%)",
+      border: "1px solid " + (isRunning ? meta.color + "44" : "#1a1a24"),
+      borderRadius: 8, padding: 14, position: "relative", overflow: "hidden",
+    }}>
+      {isRunning && <div style={{
+        position: "absolute", top: 0, left: 0, right: 0, height: 2,
+        background: "linear-gradient(90deg, transparent, " + meta.color + ", transparent)",
+        animation: "scan 2s linear infinite",
+      }} />}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 18 }}>{meta.icon}</span>
+          <span style={{ fontSize: 12, fontWeight: 700, color: "#e0e0e0", letterSpacing: 0.5 }}>{agent.name}</span>
+        </div>
+        <div style={{
+          width: 8, height: 8, borderRadius: "50%",
+          background: STATUS_COLORS[agent.status] || "#555",
+          boxShadow: isRunning ? "0 0 8px " + meta.color : "none",
+          animation: isRunning ? "pulse 1.5s infinite" : "none",
+        }} />
+      </div>
+      {agent.lastResult && (
+        <div style={{ fontSize: 10, color: "#555", marginTop: 6, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {agent.lastResult}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function fmtMcap(n) {
+  if (!n) return "\u2014";
+  if (n >= 1e9) return (n/1e9).toFixed(1) + "B";
+  if (n >= 1e6) return (n/1e6).toFixed(1) + "M";
+  if (n >= 1e3) return (n/1e3).toFixed(1) + "K";
+  return n.toFixed(0);
+}
+
+function fmtTime(ts) {
+  if (!ts) return "";
+  return new Date(ts).toLocaleTimeString();
+}
+
+function fmtPrice(p) {
+  if (!p) return "$0";
+  return "$" + p.toFixed(8);
+}
+
+function fmtPnl(pnl) {
+  var v = pnl || 0;
+  return (v >= 0 ? "+" : "") + v.toFixed(1) + "%";
+}
+
+function App() {
+  var ws = useWebSocket();
+  var connected = ws.connected;
+  var logs = ws.logs;
+  var agents = ws.agents;
+  var running = ws.running;
+  var setRunning = ws.setRunning;
+
+  var _tab = useState("overview");
+  var tab = _tab[0]; var setTab = _tab[1];
+
+  var _positions = useState([]);
+  var positions = _positions[0]; var setPositions = _positions[1];
+
+  var _tokens = useState([]);
+  var tokens = _tokens[0]; var setTokens = _tokens[1];
+
+  var _narratives = useState([]);
+  var narratives = _narratives[0]; var setNarratives = _narratives[1];
+
+  var _balance = useState({ sol: 0, address: "" });
+  var balance = _balance[0]; var setBalance = _balance[1];
+
+  var _config = useState({
+    openrouterKey: "", model: "deepseek/deepseek-chat",
+    rpcUrl: "https://api.mainnet-beta.solana.com", walletKey: "",
+    maxPositionSol: 0.05, stopLossPct: 30, takeProfitPct: 100,
+    maxConcurrentTrades: 3, minScoreToTrade: 80, slippageBps: 500,
+  });
+  var config = _config[0]; var setConfig = _config[1];
+
+  var _buyAddr = useState(""); var buyAddress = _buyAddr[0]; var setBuyAddress = _buyAddr[1];
+  var _buyAmt = useState("0.01"); var buyAmount = _buyAmt[0]; var setBuyAmount = _buyAmt[1];
+
+  var logEndRef = useRef(null);
+
+  // Polling
+  useEffect(function() {
+    if (!running) return;
+    var poll = function() {
+      Promise.all([
+        fetch("/api/positions").then(function(r){return r.json()}).catch(function(){return []}),
+        fetch("/api/tokens").then(function(r){return r.json()}).catch(function(){return []}),
+        fetch("/api/narratives").then(function(r){return r.json()}).catch(function(){return []}),
+        fetch("/api/balance").then(function(r){return r.json()}).catch(function(){return {sol:0,address:""}}),
+      ]).then(function(results) {
+        setPositions(results[0]);
+        setTokens(results[1]);
+        setNarratives(results[2]);
+        setBalance(results[3]);
+      });
+    };
+    poll();
+    var iv = setInterval(poll, 10000);
+    return function() { clearInterval(iv); };
+  }, [running]);
+
+  // Auto-scroll terminal
+  useEffect(function() {
+    if (tab === "terminal" && logEndRef.current) logEndRef.current.scrollIntoView({ behavior: "smooth" });
+  }, [logs, tab]);
+
+  var startSwarm = function() {
+    fetch("/api/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(config),
+    }).then(function() { setRunning(true); }).catch(function(e) { console.error(e); });
+  };
+
+  var stopSwarm = function() {
+    fetch("/api/stop", { method: "POST" }).then(function() { setRunning(false); }).catch(function(e) { console.error(e); });
+  };
+
+  var manualBuy = function() {
+    if (!buyAddress || !buyAmount) return;
+    fetch("/api/buy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tokenAddress: buyAddress, solAmount: parseFloat(buyAmount) }),
+    }).then(function(r){return r.json()}).then(function(data) {
+      if (data.success) setBuyAddress("");
+    }).catch(function(e) { console.error(e); });
+  };
+
+  var manualSell = function(id) {
+    fetch("/api/sell", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ positionId: id }),
+    }).catch(function(e) { console.error(e); });
+  };
+
+  var openPositions = positions.filter(function(p){return p.status === "OPEN"});
+  var totalPnl = openPositions.reduce(function(s, p){ return s + (p.pnlPct || 0); }, 0);
+  var openCount = openPositions.length;
+
+  var tabs = [
+    { id: "overview", label: "Command Center" },
+    { id: "tokens", label: "Token Radar" },
+    { id: "trades", label: "Positions" },
+    { id: "terminal", label: "Terminal" },
+    { id: "config", label: "Config" },
+  ];
+
+  var updateConfig = function(key, val) {
+    setConfig(function(prev) {
+      var next = Object.assign({}, prev);
+      next[key] = val;
+      return next;
+    });
+  };
+
+  return (
+    <div style={{ minHeight: "100vh" }}>
+      {/* Header */}
+      <div style={{
+        borderBottom: "1px solid #111", padding: "12px 24px",
+        display: "flex", justifyContent: "space-between", alignItems: "center",
+        background: "linear-gradient(180deg, #0a0a10 0%, #050508 100%)",
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <span style={{ fontFamily: "'Orbitron', sans-serif", fontSize: 18, fontWeight: 900, letterSpacing: 2, color: "#00ff88" }}>
+            SWARM
+          </span>
+          <span style={{ fontSize: 10, color: "#444", letterSpacing: 1 }}>TRADING AGENT NETWORK</span>
+          {running && <span style={{
+            fontSize: 9, color: "#00ff88", letterSpacing: 1, padding: "2px 8px",
+            border: "1px solid #00ff8844", borderRadius: 4, animation: "pulse 2s infinite",
+          }}>LIVE</span>}
+          <span style={{
+            fontSize: 9, padding: "2px 8px", borderRadius: 4,
+            background: connected ? "#00ff8815" : "#ff336615",
+            color: connected ? "#00ff88" : "#ff3366",
+          }}>{connected ? "WS CONNECTED" : "DISCONNECTED"}</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          {balance.address ? (
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontSize: 9, color: "#555", letterSpacing: 1 }}>WALLET</div>
+              <div style={{ fontSize: 11, color: "#888" }}>{balance.address.slice(0,6)}... | {balance.sol.toFixed(4)} SOL</div>
+            </div>
+          ) : null}
+          <div style={{ textAlign: "right" }}>
+            <div style={{ fontSize: 9, color: "#555", letterSpacing: 1 }}>OPEN PnL</div>
+            <div style={{
+              fontSize: 16, fontWeight: 700, fontFamily: "'Orbitron', sans-serif",
+              color: totalPnl >= 0 ? "#00ff88" : "#ff3366",
+            }}>{fmtPnl(totalPnl)}</div>
+          </div>
+          <button onClick={running ? stopSwarm : startSwarm} style={{
+            background: running ? "linear-gradient(135deg, #ff3366, #ff1a4a)" : "linear-gradient(135deg, #00ff88, #00cc6a)",
+            border: "none", color: running ? "#fff" : "#000",
+            padding: "8px 20px", borderRadius: 6, fontSize: 12, fontWeight: 700, letterSpacing: 1,
+          }}>{running ? "\u23F9 KILL" : "\u25B6 DEPLOY"}</button>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div style={{ display: "flex", borderBottom: "1px solid #111", padding: "0 24px" }}>
+        {tabs.map(function(t) {
+          return (
+            <button key={t.id} onClick={function(){setTab(t.id)}} style={{
+              background: "none", border: "none",
+              borderBottom: tab === t.id ? "2px solid #00ff88" : "2px solid transparent",
+              color: tab === t.id ? "#e0e0e0" : "#555",
+              padding: "10px 16px", fontSize: 11, letterSpacing: 0.5,
+            }}>{t.label}</button>
+          );
+        })}
+      </div>
+
+      {/* Content */}
+      <div style={{ padding: 24 }}>
+
+        {/* OVERVIEW */}
+        {tab === "overview" && (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+            <div style={{ gridColumn: "1 / -1" }}>
+              <div style={{ fontSize: 10, color: "#555", letterSpacing: 1, marginBottom: 10 }}>AGENT SWARM STATUS</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10 }}>
+                {agents.map(function(a) { return <AgentCard key={a.id} agent={a} />; })}
+              </div>
+            </div>
+
+            {/* Narratives */}
+            <div style={{ background: "linear-gradient(135deg, #0a0a0f, #0d0d14)", border: "1px solid #1a1a24", borderRadius: 8, padding: 16 }}>
+              <div style={{ fontSize: 10, color: "#555", letterSpacing: 1, marginBottom: 10 }}>TOP NARRATIVES</div>
+              {narratives.length === 0 && <div style={{ fontSize: 11, color: "#333" }}>Deploy swarm to scan narratives...</div>}
+              {narratives.map(function(n, i) {
+                return (
+                  <div key={i} style={{
+                    display: "flex", justifyContent: "space-between", padding: "6px 0",
+                    borderBottom: i < narratives.length - 1 ? "1px solid #111" : "none",
+                  }}>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <span style={{ fontSize: 10, color: "#333" }}>{"#" + (i+1)}</span>
+                      <span style={{ fontSize: 12, color: "#ccc" }}>{n.name}</span>
+                      <span style={{ fontSize: 9, color: n.trend === "rising" ? "#00ff88" : n.trend === "falling" ? "#ff3366" : "#888" }}>
+                        {n.trend === "rising" ? "\u2191" : n.trend === "falling" ? "\u2193" : "\u2192"}
+                      </span>
+                    </div>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: n.score > 80 ? "#00ff88" : n.score > 60 ? "#ffe66d" : "#888" }}>
+                      {n.score}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Quick stats */}
+            <div style={{ background: "linear-gradient(135deg, #0a0a0f, #0d0d14)", border: "1px solid #1a1a24", borderRadius: 8, padding: 16 }}>
+              <div style={{ fontSize: 10, color: "#555", letterSpacing: 1, marginBottom: 10 }}>QUICK STATS</div>
+              {[
+                { label: "Open Positions", value: String(openCount), color: "#e0e0e0" },
+                { label: "Tokens Scanned", value: String(tokens.length), color: "#4ecdc4" },
+                { label: "Narratives Tracked", value: String(narratives.length), color: "#ffe66d" },
+                { label: "Total Trades", value: String(positions.length), color: "#a855f7" },
+                { label: "Wallet Balance", value: balance.sol.toFixed(4) + " SOL", color: "#00ff88" },
+              ].map(function(s, i) {
+                return (
+                  <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: i < 4 ? "1px solid #111" : "none" }}>
+                    <span style={{ fontSize: 11, color: "#666" }}>{s.label}</span>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: s.color }}>{s.value}</span>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Manual Trade */}
+            <div style={{ gridColumn: "1 / -1", background: "linear-gradient(135deg, #0a0a0f, #0d0d14)", border: "1px solid #1a1a24", borderRadius: 8, padding: 16 }}>
+              <div style={{ fontSize: 10, color: "#555", letterSpacing: 1, marginBottom: 10 }}>MANUAL TRADE</div>
+              <div style={{ display: "flex", gap: 10, alignItems: "end" }}>
+                <div style={{ flex: 3 }}>
+                  <label style={{ fontSize: 10, color: "#555", display: "block", marginBottom: 4 }}>TOKEN ADDRESS</label>
+                  <input value={buyAddress} onChange={function(e){setBuyAddress(e.target.value)}} placeholder="Paste Solana token address..." />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label style={{ fontSize: 10, color: "#555", display: "block", marginBottom: 4 }}>SOL AMOUNT</label>
+                  <input type="number" value={buyAmount} onChange={function(e){setBuyAmount(e.target.value)}} step="0.01" min="0.001" />
+                </div>
+                <button onClick={manualBuy} disabled={!running} style={{
+                  background: running ? "linear-gradient(135deg, #00ff88, #00cc6a)" : "#222",
+                  border: "none", color: running ? "#000" : "#555", padding: "8px 24px",
+                  borderRadius: 6, fontSize: 12, fontWeight: 700, letterSpacing: 1, whiteSpace: "nowrap",
+                }}>BUY</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* TOKEN RADAR */}
+        {tab === "tokens" && (
+          <div>
+            <div style={{ fontSize: 10, color: "#555", letterSpacing: 1, marginBottom: 12 }}>{"TOKEN RADAR \u2014 AI SCORED (" + tokens.length + " tokens)"}</div>
+            <div style={{ background: "#0a0a0f", border: "1px solid #1a1a24", borderRadius: 8, overflow: "hidden" }}>
+              <div style={{
+                display: "grid", gridTemplateColumns: "80px 80px 80px 70px 80px 1fr",
+                padding: "10px 16px", borderBottom: "1px solid #1a1a24", fontSize: 9, color: "#555", letterSpacing: 1,
+              }}>
+                <span>TOKEN</span><span>MCAP</span><span>LIQUIDITY</span><span>SCORE</span><span>SIGNAL</span><span>REASONING</span>
+              </div>
+              {tokens.length === 0 && (
+                <div style={{ padding: 20, textAlign: "center", color: "#333", fontSize: 11 }}>
+                  Deploy swarm to start scanning tokens...
+                </div>
+              )}
+              {tokens.map(function(t, i) {
+                return (
+                  <div key={i} style={{
+                    display: "grid", gridTemplateColumns: "80px 80px 80px 70px 80px 1fr",
+                    padding: "10px 16px", borderBottom: "1px solid #0d0d14", alignItems: "center",
+                    animation: "fadeIn 0.3s " + (i * 0.03) + "s both",
+                  }}>
+                    <span style={{ fontSize: 13, fontWeight: 700 }}>{t.symbol}</span>
+                    <span style={{ fontSize: 12, color: "#888" }}>{fmtMcap(t.mcap)}</span>
+                    <span style={{ fontSize: 12, color: "#888" }}>{fmtMcap(t.liquidity)}</span>
+                    <span style={{
+                      fontSize: 12, fontWeight: 700,
+                      color: t.score > 85 ? "#00ff88" : t.score > 70 ? "#ffe66d" : "#888",
+                    }}>{t.score}</span>
+                    <span style={{
+                      fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 4, display: "inline-block",
+                      background: t.signal === "BUY" ? "#00ff8822" : t.signal === "WATCH" ? "#ffe66d22" : t.signal === "RISKY" ? "#ff336622" : "#44444422",
+                      color: t.signal === "BUY" ? "#00ff88" : t.signal === "WATCH" ? "#ffe66d" : t.signal === "RISKY" ? "#ff3366" : "#888",
+                    }}>{t.signal}</span>
+                    <span style={{ fontSize: 10, color: "#555", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.reasoning}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* POSITIONS */}
+        {tab === "trades" && (
+          <div>
+            <div style={{ fontSize: 10, color: "#555", letterSpacing: 1, marginBottom: 12 }}>{"POSITIONS (" + openCount + " open)"}</div>
+            {positions.length === 0 && (
+              <div style={{ padding: 40, textAlign: "center", color: "#333", fontSize: 12 }}>
+                No positions yet. Let the swarm hunt or make a manual trade.
+              </div>
+            )}
+            <div style={{ display: "grid", gap: 8 }}>
+              {positions.map(function(p, i) {
+                return (
+                  <div key={i} style={{
+                    background: "linear-gradient(135deg, #0a0a0f, #0d0d14)",
+                    border: "1px solid " + (p.status === "OPEN" ? "#1a1a24" : "#111"),
+                    borderRadius: 8, padding: 16, display: "grid",
+                    gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr auto",
+                    gap: 16, alignItems: "center", opacity: p.status === "OPEN" ? 1 : 0.5,
+                  }}>
+                    <div>
+                      <div style={{ fontSize: 9, color: "#555" }}>TOKEN</div>
+                      <div style={{ fontSize: 15, fontWeight: 700 }}>{p.symbol}</div>
+                      <div style={{ fontSize: 9, color: "#444" }}>{p.narrative}</div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 9, color: "#555" }}>ENTRY</div>
+                      <div style={{ fontSize: 12 }}>{fmtPrice(p.entryPrice)}</div>
+                      <div style={{ fontSize: 9, color: "#444" }}>{(p.entrySol || 0).toFixed(4) + " SOL"}</div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 9, color: "#555" }}>CURRENT</div>
+                      <div style={{ fontSize: 12 }}>{fmtPrice(p.currentPrice)}</div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 9, color: "#555" }}>PnL</div>
+                      <div style={{
+                        fontSize: 15, fontWeight: 700,
+                        color: (p.pnlPct || 0) >= 0 ? "#00ff88" : "#ff3366",
+                      }}>{fmtPnl(p.pnlPct)}</div>
+                    </div>
+                    <div>
+                      <span style={{
+                        fontSize: 9, fontWeight: 700, padding: "3px 10px", borderRadius: 4, letterSpacing: 1,
+                        background: p.status === "OPEN" ? "#00ff8815" : p.status === "STOPPED" ? "#ff336615" : "#4ecdc415",
+                        color: p.status === "OPEN" ? "#00ff88" : p.status === "STOPPED" ? "#ff3366" : "#4ecdc4",
+                      }}>{p.status}</span>
+                    </div>
+                    <div>
+                      {p.status === "OPEN" ? (
+                        <button onClick={function(){manualSell(p.id)}} style={{
+                          background: "#ff336622", border: "1px solid #ff336644", color: "#ff3366",
+                          padding: "6px 14px", borderRadius: 6, fontSize: 10, fontWeight: 700,
+                        }}>SELL</button>
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* TERMINAL */}
+        {tab === "terminal" && (
+          <div style={{
+            background: "#08080d", border: "1px solid #1a1a24", borderRadius: 8,
+            padding: 16, height: "calc(100vh - 160px)", overflow: "auto",
+          }}>
+            <div style={{ fontSize: 10, color: "#555", letterSpacing: 1, marginBottom: 12 }}>SWARM TERMINAL OUTPUT</div>
+            {logs.length === 0 && <div style={{ color: "#333", fontSize: 11 }}>Deploy the swarm to see live output...</div>}
+            {logs.map(function(log, i) {
+              return (
+                <div key={i} style={{ fontSize: 11, color: LOG_COLORS[log.type] || "#8a8a8a", padding: "1px 0", animation: "fadeIn 0.2s" }}>
+                  <span style={{ color: "#333", marginRight: 8 }}>{fmtTime(log.timestamp)}</span>
+                  <span style={{ color: "#444", marginRight: 8 }}>{"[" + log.agent + "]"}</span>
+                  {log.message}
+                </div>
+              );
+            })}
+            <div ref={logEndRef} />
+          </div>
+        )}
+
+        {/* CONFIG */}
+        {tab === "config" && (
+          <div style={{ maxWidth: 640 }}>
+            <div style={{ fontSize: 10, color: "#555", letterSpacing: 1, marginBottom: 16 }}>SWARM CONFIGURATION</div>
+
+            <div style={{ background: "#0a0a0f", border: "1px solid #1a1a24", borderRadius: 8, padding: 20, marginBottom: 16 }}>
+              <div style={{ fontSize: 11, color: "#888", marginBottom: 14, fontWeight: 700 }}>{"\u{1F511} API Keys"}</div>
+              <div style={{ display: "grid", gap: 12 }}>
+                <div>
+                  <label style={{ fontSize: 10, color: "#555", display: "block", marginBottom: 4 }}>OPENROUTER API KEY</label>
+                  <input type="password" value={config.openrouterKey} onChange={function(e){updateConfig("openrouterKey", e.target.value)}} placeholder="sk-or-..." />
+                </div>
+                <div>
+                  <label style={{ fontSize: 10, color: "#555", display: "block", marginBottom: 4 }}>SOLANA RPC URL</label>
+                  <input value={config.rpcUrl} onChange={function(e){updateConfig("rpcUrl", e.target.value)}} placeholder="https://api.mainnet-beta.solana.com" />
+                </div>
+                <div>
+                  <label style={{ fontSize: 10, color: "#555", display: "block", marginBottom: 4 }}>WALLET PRIVATE KEY (Base58)</label>
+                  <input type="password" value={config.walletKey} onChange={function(e){updateConfig("walletKey", e.target.value)}} placeholder="Leave empty for scan-only mode" />
+                </div>
+              </div>
+            </div>
+
+            <div style={{ background: "#0a0a0f", border: "1px solid #1a1a24", borderRadius: 8, padding: 20, marginBottom: 16 }}>
+              <div style={{ fontSize: 11, color: "#888", marginBottom: 14, fontWeight: 700 }}>{"\u{1F916} LLM Config"}</div>
+              <div>
+                <label style={{ fontSize: 10, color: "#555", display: "block", marginBottom: 4 }}>MODEL (via OpenRouter)</label>
+                <input value={config.model} onChange={function(e){updateConfig("model", e.target.value)}} />
+                <div style={{ fontSize: 9, color: "#444", marginTop: 4 }}>
+                  Recommended: deepseek/deepseek-chat (cheap + good), anthropic/claude-sonnet-4-20250514, google/gemini-2.0-flash-001
+                </div>
+              </div>
+            </div>
+
+            <div style={{ background: "#0a0a0f", border: "1px solid #1a1a24", borderRadius: 8, padding: 20, marginBottom: 16 }}>
+              <div style={{ fontSize: 11, color: "#888", marginBottom: 14, fontWeight: 700 }}>{"\u{1F4CA} Risk Parameters"}</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                {[
+                  { key: "maxPositionSol", label: "MAX POSITION (SOL)", step: "0.01" },
+                  { key: "stopLossPct", label: "STOP LOSS (%)", step: "5" },
+                  { key: "takeProfitPct", label: "TAKE PROFIT (%)", step: "10" },
+                  { key: "maxConcurrentTrades", label: "MAX CONCURRENT TRADES", step: "1" },
+                  { key: "minScoreToTrade", label: "MIN AI SCORE TO TRADE", step: "5" },
+                  { key: "slippageBps", label: "SLIPPAGE (BPS)", step: "100" },
+                ].map(function(f) {
+                  return (
+                    <div key={f.key}>
+                      <label style={{ fontSize: 10, color: "#555", display: "block", marginBottom: 4 }}>{f.label}</label>
+                      <input type="number" value={config[f.key]} step={f.step} onChange={function(e){updateConfig(f.key, parseFloat(e.target.value))}} />
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div style={{ background: "#0d1a0f", border: "1px solid #00ff8833", borderRadius: 8, padding: 16, fontSize: 11, color: "#00ff88aa" }}>
+              <strong>{"\u26A0\uFE0F Risk Warning:"}</strong> This bot trades real money. Start with tiny amounts (0.01-0.05 SOL max position).
+              Use a dedicated wallet with only what you can afford to lose. The AI scoring is experimental.
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.render(React.createElement(App), document.getElementById("root"));
+</script>
+</body>
+</html>
